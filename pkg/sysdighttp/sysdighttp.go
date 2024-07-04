@@ -5,151 +5,144 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 )
 
+type SysdigClient interface {
+	SysdigRequest(logger *logrus.Logger, config SysdigRequestConfig) (*http.Response, error)
+	ResponseBodyToJson(resp *http.Response, target interface{}) error
+}
+
+type sysdigClient struct{}
+
+func NewSysdigClient() SysdigClient {
+	return &sysdigClient{}
+}
+
 type SysdigRequestConfig struct {
-	Method     string
-	URL        string
-	Headers    map[string]string
-	Params     map[string]interface{}
-	JSON       interface{}
-	Data       map[string]string
-	Auth       [2]string
-	Verify     bool
-	Stream     bool
-	MaxRetries int
-	BaseDelay  int
-	MaxDelay   int
-	Timeout    int
+	Method      string
+	Path        string
+	Headers     map[string]string
+	Params      map[string]interface{}
+	JSON        interface{}
+	Data        map[string]string
+	Auth        [2]string
+	Verify      bool
+	Stream      bool
+	MaxRetries  int
+	BaseDelay   int
+	MaxDelay    int
+	Timeout     int
+	ApiEndpoint string
+	SecureToken string
 }
 
-func DefaultSysdigRequestConfig() SysdigRequestConfig {
+func DefaultSysdigRequestConfig(apiEndpoint string, secureToken string) SysdigRequestConfig {
 	return SysdigRequestConfig{
-		Method:     "GET",
-		Verify:     false,
-		MaxRetries: 1,
-		BaseDelay:  5,
-		MaxDelay:   60,
-		Timeout:    600,
+		Method:      "GET",
+		Verify:      false,
+		MaxRetries:  1,
+		BaseDelay:   5,
+		MaxDelay:    60,
+		Timeout:     600,
+		ApiEndpoint: apiEndpoint,
+		SecureToken: secureToken,
 	}
 }
 
-//goland:noinspection GoBoolExpressions
-func SysdigRequest(SysdigRequest SysdigRequestConfig) (*http.Response, error) {
+func (c *sysdigClient) SysdigRequest(logger *logrus.Logger, config SysdigRequestConfig) (*http.Response, error) {
 	retries := 0
-	// Initialize the request body as an io.Reader
-	var requestBody io.Reader
-
 	var resp *http.Response
+	var err error
 
-	for retries <= SysdigRequest.MaxRetries {
-		// Check the Content-Type to determine how to encode the request body
-		if contentType, ok := SysdigRequest.Headers["Content-Type"]; ok && contentType == "application/x-www-form-urlencoded" {
-			// Encode the Data map as URL-encoded form data
-			data := url.Values{}
-			for key, value := range SysdigRequest.Data {
-				data.Set(key, value)
-			}
-			requestBody = strings.NewReader(data.Encode())
-		} else if SysdigRequest.JSON != nil {
-			// Handle JSON data as before
-			byteData, err := json.Marshal(SysdigRequest.JSON)
-			if err != nil {
-				return nil, fmt.Errorf("SysdigRequest:: failed to marshal JSON data: %w", err)
-			}
-			requestBody = bytes.NewBuffer(byteData)
-		}
-
-		u, err := url.Parse(SysdigRequest.URL)
+	for retries <= config.MaxRetries {
+		resp, err = makeRequest(&config)
 		if err != nil {
-			return nil, fmt.Errorf("SysdigRequest:: failed to parse URL: %w", err)
+			logger.Errorf("Error on HTTP request: %v", err)
+			time.Sleep(time.Duration(config.BaseDelay) * time.Second)
+			retries++
+			continue
 		}
 
-		params := url.Values{}
-		for k, v := range SysdigRequest.Params {
-			switch value := v.(type) {
-			case int:
-				params.Add(k, strconv.Itoa(value))
-			case string:
-				params.Add(k, value)
-			default:
-				// Handle unexpected types if necessary, or ignore them
-			}
-		}
-		u.RawQuery = params.Encode()
-
-		req, err := http.NewRequest(SysdigRequest.Method, SysdigRequest.URL, requestBody)
-		if err != nil {
-			return nil, fmt.Errorf("SysdigRequest:: failed to create request: %w", err)
-		}
-
-		for k, v := range SysdigRequest.Headers {
-			req.Header.Set(k, v)
-		}
-
-		if len(SysdigRequest.Auth) == 2 {
-			if SysdigRequest.Auth[0] != "" {
-				req.SetBasicAuth(SysdigRequest.Auth[0], SysdigRequest.Auth[1])
-			}
-		}
-
-		// Create custom Transport that allows us to control TLSClientConfig
-		customTransport := &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: !SysdigRequest.Verify, // Notice the negation here, because InsecureSkipVerify is true when we want to skip verification
-			},
-		}
-
-		// Use the custom Transport with the http.Client
-		client := &http.Client{
-			Timeout:   time.Duration(SysdigRequest.Timeout) * time.Second,
-			Transport: customTransport, // Set the custom transport
-		}
-
-		resp, err = client.Do(req)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			return resp, nil
-		}
-
-		if err == nil {
-			// log status code if request did not fail
-			log.Printf("SysdigRequest:: Received HTTP status code: %d", resp.StatusCode)
+		if resp.StatusCode >= 400 {
 			respBody, _ := io.ReadAll(resp.Body)
-			log.Printf("SysdigRequest:: Response body: %s", string(respBody))
-			resp.Body.Close() // ensure response body is closed
+			_ = resp.Body.Close()
+			logger.Infof("Received HTTP status code: %d", resp.StatusCode)
+			logger.Infof("Response body: %s", string(respBody))
+			return resp, fmt.Errorf("HTTP request failed with status code: %d", resp.StatusCode)
 		}
 
-		log.Printf("SysdigRequest:: Error: %v. Retrying in %d seconds...", err, SysdigRequest.BaseDelay)
-		log.Printf("SysdigRequest:: StatusCode: '%d', Retry: %d/%d, Sleeping for %d seconds", resp.StatusCode, retries, SysdigRequest.MaxRetries, SysdigRequest.BaseDelay)
-		time.Sleep(time.Duration(SysdigRequest.BaseDelay) * time.Second)
-		retries++
+		logger.Debugf("Received HTTP status code: %d", resp.StatusCode)
+		return resp, nil
 	}
 
-	log.Printf("SysdigRequest:: Failed to fetch data from %s after %d retries.", SysdigRequest.URL, SysdigRequest.MaxRetries)
-	log.Printf("SysdigRequest:: Error making request to %s", SysdigRequest.URL)
-
-	// Manually create an HTTP response with a 503 status code
-	resp = &http.Response{
+	logger.Errorf("Failed to fetch data from %s after %d retries.", config.ApiEndpoint, config.MaxRetries)
+	return &http.Response{
 		Status:     "503 Service Unavailable",
 		StatusCode: http.StatusServiceUnavailable,
 		Body:       io.NopCloser(bytes.NewBufferString("Service is unavailable after retries.")),
-	}
-	return resp, fmt.Errorf("SysdigRequest:: error %s, failed after %d retries", "503", SysdigRequest.MaxRetries)
+	}, fmt.Errorf("service unavailable after %d retries", config.MaxRetries)
 }
 
-func ResponseBodyToJson(resp *http.Response, target interface{}) error {
+func makeRequest(config *SysdigRequestConfig) (*http.Response, error) {
+	u, err := url.Parse(fmt.Sprintf("%s%s", config.ApiEndpoint, config.Path))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse URL: %v", err)
+	}
+
+	params := u.Query()
+	for k, v := range config.Params {
+		switch value := v.(type) {
+		case int:
+			params.Add(k, strconv.Itoa(value))
+		case string:
+			params.Add(k, value)
+		default:
+		}
+	}
+	u.RawQuery = params.Encode()
+
+	var requestBody io.Reader
+	if config.JSON != nil {
+		byteData, err := json.Marshal(config.JSON)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal JSON data: %v", err)
+		}
+		requestBody = bytes.NewBuffer(byteData)
+	}
+
+	req, err := http.NewRequest(config.Method, u.String(), requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	for key, value := range config.Headers {
+		req.Header.Set(key, value)
+	}
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", config.SecureToken))
+
+	client := &http.Client{
+		Timeout: time.Duration(config.Timeout) * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: !config.Verify},
+		},
+	}
+	return client.Do(req)
+}
+
+func (c *sysdigClient) ResponseBodyToJson(resp *http.Response, target interface{}) error {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
 
 	err = json.Unmarshal(body, target)
 	if err != nil {
