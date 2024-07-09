@@ -101,34 +101,46 @@ func createAlertForCluster(logger *logrus.Logger, config *configuration.Config, 
 	return nil
 }
 
+var VERSION = "1.0.1"
+
 func main() {
 	var err error
-	var config *configuration.Config
 	var arrClusters *metadata.ResultMetadata
 	var arrAlerts *alerts.AlertQuery
 
 	logger := loggerpkg.GetLogger()
-	client := sysdighttp.NewSysdigClient()
+	logger.Infof("Alerts-by-cluster.  Version: %s", VERSION)
+	logger.Info("Creates runtime scanning alerts for each kubernetes cluster\n")
 
-	if config, err = configuration.LoadConfig(logger); err != nil {
-		logger.Fatalf("Could not load configuration. Error: '%v'", err)
+	client := sysdighttp.NewSysdigClient()
+	configManager := configuration.NewConfigManager(logger)
+	if err = configManager.LoadConfig(); err != nil {
+		logger.Fatalf("Could not load configuration, exiting.. Error: '%v'", err)
 	}
 
-	if arrClusters, err = retrieveClusters(logger, config, client); err != nil {
+	if err = configManager.ValidateConfig(); err != nil {
+		logger.Fatalf("Could not validate configuration, exiting.. Error: '%v'", err)
+	}
+
+	if arrClusters, err = retrieveClusters(logger, configManager.GetConfig(), client); err != nil {
 		logger.Fatalf("Could not retrieve clusters. error: '%v'", err)
 	}
 
-	if arrAlerts, err = getAlerts(logger, config, client); err != nil {
+	if arrAlerts, err = getAlerts(logger, configManager.GetConfig(), client); err != nil {
 		logger.Fatalf("Could not retrieve alerts.  error '%v'", err)
 	}
 	_ = arrAlerts
 
 	for _, cluster := range arrClusters.Data {
 		if alertExists(arrAlerts, cluster.KubernetesClusterName) == true {
-			logger.Debugf("Cluster '%s' exists", cluster.KubernetesClusterName)
+			logger.Debugf("Alert for cluster '%s' already exists, skipping..", cluster.KubernetesClusterName)
 		} else {
-			logger.Debugf("Cluster '%s' doesn't exist, creating", cluster.KubernetesClusterName)
-			if err = createAlertForCluster(logger, config, cluster.KubernetesClusterName, client); err != nil {
+			logger.Debugf("Alert for cluster '%s' does not exist, creating alert '%s' with scope '%s'",
+				cluster.KubernetesClusterName,
+				fmt.Sprintf("Cluster: %s", cluster.KubernetesClusterName),
+				fmt.Sprintf("kubernetes.cluster.name = \"%s\"", cluster.KubernetesClusterName))
+
+			if err = createAlertForCluster(logger, configManager.GetConfig(), cluster.KubernetesClusterName, client); err != nil {
 				logger.Fatalf("Could not create alert for cluster '%s'. Error: '%v'", cluster.KubernetesClusterName, err)
 			}
 		}
