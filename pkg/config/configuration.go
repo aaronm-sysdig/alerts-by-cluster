@@ -3,6 +3,7 @@ package configuration
 import (
 	"errors"
 	"github.com/sirupsen/logrus"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"strings"
 )
@@ -32,9 +33,14 @@ func (cm *ConfigManager) LoadConfig() error {
 		cm.log.Println("Using config file:", viper.ConfigFileUsed())
 	}
 
-	// Bind environment variables
-	viper.BindEnv("secure_url")
-	viper.BindEnv("secure_api_token")
+	// Define command-line flags
+	pflag.String("secure_url", "", "Secure URL for the application")
+	pflag.String("secure_api_token", "", "Secure API token for the application")
+	pflag.Parse()
+
+	// Bind command-line flags to Viper
+	viper.BindPFlag("secure_url", pflag.Lookup("secure_url"))
+	viper.BindPFlag("secure_api_token", pflag.Lookup("secure_api_token"))
 
 	// Unmarshal the config into the Config struct
 	err := viper.Unmarshal(cm.config)
