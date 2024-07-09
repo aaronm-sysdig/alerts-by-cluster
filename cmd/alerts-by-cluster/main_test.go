@@ -26,7 +26,7 @@ var _ = ginkgo.Describe("Main", func() {
 		ctrl             *gomock.Controller
 		mockSysdigClient *sysdighttp.MockSysdigClient
 		logger           *logrus.Logger
-		config           *configuration.Config
+		configManager    *configuration.ConfigManager
 	)
 
 	ginkgo.BeforeEach(func() {
@@ -35,8 +35,8 @@ var _ = ginkgo.Describe("Main", func() {
 		logger = loggerpkg.GetLogger()
 
 		// Load configuration for tests
-		var err error
-		config, err = configuration.LoadConfig(logger)
+		configManager = configuration.NewConfigManager(logger)
+		err := configManager.LoadConfig()
 		if err != nil {
 			logger.Warnf("Could not load configuration. Error: '%v'", err)
 		}
@@ -61,8 +61,7 @@ var _ = ginkgo.Describe("Main", func() {
 			}
 			return json.Unmarshal(body, target)
 		}).Times(1)
-
-		result, err := retrieveClusters(logger, config, mockSysdigClient)
+		result, err := retrieveClusters(logger, configManager.GetConfig(), mockSysdigClient)
 		gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
 		gomega.Expect(len(result.Data)).Should(gomega.Equal(1))
 		gomega.Expect(result.Data[0].KubernetesClusterName).Should(gomega.Equal("aamiles-onprem5"))
@@ -85,7 +84,7 @@ var _ = ginkgo.Describe("Main", func() {
 			return json.Unmarshal(body, target)
 		}).Times(1)
 
-		result, err := getAlerts(logger, config, mockSysdigClient)
+		result, err := getAlerts(logger, configManager.GetConfig(), mockSysdigClient)
 		gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
 		gomega.Expect(len(result.Alerts)).Should(gomega.Equal(1))
 		gomega.Expect(result.Alerts[0].Name).Should(gomega.Equal("Cluster: aamiles-onprem5"))
@@ -119,7 +118,7 @@ var _ = ginkgo.Describe("Main", func() {
 		}
 
 		mockSysdigClient.EXPECT().SysdigRequest(gomock.Any(), gomock.Any()).Return(httpResponse, nil).Times(1)
-		err := createAlertForCluster(logger, config, clusterName, mockSysdigClient)
+		err := createAlertForCluster(logger, configManager.GetConfig(), clusterName, mockSysdigClient)
 		gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
 	})
 })
